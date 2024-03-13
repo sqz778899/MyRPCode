@@ -83,7 +83,7 @@ namespace UnityEngine.Rendering.Universal
     /// </summary>
     public struct RenderingData
     {
-        public CommandBuffer commandBuffer;
+        internal CommandBuffer commandBuffer;
 
         /// <summary>
         /// Returns culling results that exposes handles to visible objects, lights and probes.
