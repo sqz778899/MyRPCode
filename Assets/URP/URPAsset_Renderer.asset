@@ -123,5 +123,5 @@ MonoBehaviour:
   m_Name: VolumetricCloud
   m_EditorClassIdentifier: 
   m_Active: 1
-  VolumetricCloudMaterial: {fileID: 2100000, guid: 78a08787ca30045abb69f6f7dd878e09, type: 2}
+  VolumetricCloudMaterial: {fileID: 2100000, guid: 8f6af6abeb929b04c9987716bd4e8e9c, type: 2}
   VolumetricCloudRenderPassEvent: 400
