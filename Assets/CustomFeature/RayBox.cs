@@ -8,6 +8,7 @@ public class RayBox : MonoBehaviour
     {
         Gizmos.color = Color.red;
         Gizmos.DrawWireCube(transform.position,transform.localScale);
+        Debug.Log("_RayBoxMax" +  CalBoxMax(transform.position,transform.localScale));
         Shader.SetGlobalVector("_RayBoxMin",CalBoxMin(transform.position,transform.localScale));
         Shader.SetGlobalVector("_RayBoxMax",CalBoxMax(transform.position,transform.localScale));
     }

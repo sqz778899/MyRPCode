@@ -51,6 +51,9 @@ namespace UnityEngine.Rendering.Universal
                 {
                     return;
                 }
+                Matrix4x4 projectionMatrix = GL.GetGPUProjectionMatrix(renderingData.cameraData.camera.projectionMatrix, false);
+                Shader.SetGlobalMatrix("_InverseProjectionMatrix", projectionMatrix.inverse);
+                Shader.SetGlobalMatrix("_InverseViewMatrix", renderingData.cameraData.camera.cameraToWorldMatrix);
                 
                 ref CommandBuffer cmd = ref renderingData.commandBuffer;
                 var cameraData = renderingData.cameraData;
