@@ -3,6 +3,7 @@ Shader "RenderFeature/VolumetricCloud"
     Properties
     {
         _MainTex ("Texture", 2D) = "white" {}
+        _NoiseTex ("Texture", 3D) = "white" {}
     }
     SubShader
     {
@@ -19,7 +20,7 @@ Shader "RenderFeature/VolumetricCloud"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
             struct Attributes
             {
-                float4 vertex : POSITION;
+                float3 vertex : POSITION;
                 uint vertexID : SV_VertexID;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
@@ -34,6 +35,9 @@ Shader "RenderFeature/VolumetricCloud"
             
             TEXTURE2D(_MainTex);
             SAMPLER(sampler_MainTex);
+            TEXTURE3D(_NoiseTex);
+            SAMPLER(sampler_NoiseTex);
+            
             float4 _MainTex_ST;
 
             float3 _RayBoxMin;
@@ -41,45 +45,6 @@ Shader "RenderFeature/VolumetricCloud"
 
             float4x4 _InverseProjectionMatrix;
             float4x4 _InverseViewMatrix;
-
-            //射线与包围盒相交, x 到包围盒最近的距离， y 穿过包围盒的距离
-            float2 RayBoxDst(float3 boxMin, float3 boxMax, float3 pos, float3 rayDir)
-            {
-                float3 t0 = (boxMin - pos) / max(rayDir,  float3(0.00001f, 0.00001f, 0.00001f));
-                float3 t1 = (boxMax - pos) / max(rayDir,  float3(0.00001f, 0.00001f, 0.00001f));
-                
-                float3 tmin = min(t0, t1);
-                float3 tmax = max(t0, t1);
-                
-                //射线到box两个相交点的距离, dstA最近距离， dstB最远距离
-                float dstA = max(max(tmin.x, tmin.y), tmin.z);
-                float dstB = min(min(tmax.x, tmax.y), tmax.z);
-                
-                float dstToBox = max(0, dstA);
-                float dstInBox = max(0, dstB - dstToBox);
-                
-                return float2(dstToBox, dstInBox);
-            }
-
-            float3 GetRayByScreenSpace(float2 ScreenUV)
-            {
-                // 创建NDC空间中的射线，z值从-1（near plane）变到1（far plane）。
-                float3 startRayNDC = float3(ScreenUV.x * 2.0f - 1.0f, ScreenUV.y * 2.0f - 1.0f, -1.0f);
-                float3 endRayNDC = float3(ScreenUV.x * 2.0f - 1.0f, ScreenUV.y * 2.0f - 1.0f, 1.0f);
-                //unity_CameraInvProjection
-                
-                // 屏幕空间 --> 视锥空间
-                float4 startRayView = mul(_InverseProjectionMatrix, startRayNDC);
-                 startRayView.xyz /= startRayView.w;
-                float4 endRayView = mul(_InverseProjectionMatrix, endRayNDC);
-                endRayView.xyz /= endRayView.w;
-                //视锥空间 --> 世界空间
-                float4 startRayWS = mul(_InverseViewMatrix, float4(startRayView.xyz, 1));
-                float4 endRayWS = mul(_InverseViewMatrix, float4(endRayView.xyz, 1));
-                
-                float3 rayDir = normalize(startRayWS.xyz - endRayWS.xyz);
-                return rayDir;
-            }
 
             float4 GetWorldSpacePosition(float depth, float2 uv)
             {
@@ -91,30 +56,35 @@ Shader "RenderFeature/VolumetricCloud"
                  return world_vector;
              }
 
-            float cloudRayMarching(float3 startPoint, float3 direction) 
+            float2 rayBoxDst(float3 boundsMin, float3 boundsMax,
+                            float3 rayOrigin, float3 invRaydir) 
             {
-                float3 testPoint = startPoint;
-                float sum = 0.0;
-                direction *= 0.05;//每次步进间隔
-                for (int i = 0; i < 256; i++)//步进总长度
-                {
-                    testPoint += direction;
-                    if (testPoint.x < 1 && testPoint.x > -1 &&
-                    testPoint.z < 1 && testPoint.z > -1 &&
-                    testPoint.y < 1 && testPoint.y > -1)
-                    {
-                        sum += 0.01;
-                    }
-                }
-                return sum;
+                float3 t0 = (boundsMin - rayOrigin) * invRaydir;
+                float3 t1 = (boundsMax - rayOrigin) * invRaydir;
+                float3 tmin = min(t0, t1);
+                float3 tmax = max(t0, t1);
+
+                float dstA = max(max(tmin.x, tmin.y), tmin.z); //进入点
+                float dstB = min(tmax.x, min(tmax.y, tmax.z)); //出去点
+
+                float dstToBox = max(0, dstA);
+                float dstInsideBox = max(0, dstB - dstToBox);
+                return float2(dstToBox, dstInsideBox);
             }
-            
+
+            float sampleDensity(float3 rayPos) 
+            {
+                 float3 uvw = rayPos ;
+                 float4 shapeNoise = SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, uvw);
+                 return shapeNoise.r;
+             }
+                        
             Varyings vert (Attributes input)
             {
                 Varyings output = (Varyings)0;
                 output.positionCS = GetFullScreenTriangleVertexPosition(input.vertexID);
                 output.texcoord = GetFullScreenTriangleTexCoord(input.vertexID);
-                output.positionWS = TransformObjectToWorld(input.vertex.xyz);
+                output.positionWS = TransformObjectToWorld(input.vertex);
                 return output;
             }
 
@@ -122,27 +92,40 @@ Shader "RenderFeature/VolumetricCloud"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 float2 uv = input.texcoord;
-                half3 viewDirWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
-
-                float3 ray = GetRayByScreenSpace(uv);
                 
-                float p = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv);
+                //float p = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv);
+                float3 rayPos = _WorldSpaceCameraPos;
                 float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, uv);
                 float4 worldPos = GetWorldSpacePosition(depth, uv);
-                float3 worldViewDir = normalize(worldPos.xyz - _WorldSpaceCameraPos.xyz) ;
-                float2 ppp = RayBoxDst(_RayBoxMin, _RayBoxMax, _WorldSpaceCameraPos,worldViewDir);
-                bool rayHitBox = ppp.y > 0;
-                float cloud = cloudRayMarching(_WorldSpaceCameraPos.xyz, worldViewDir);
-                //float3 worldViewDir = normalize(xxx - _WorldSpaceCameraPos) ;
-                float4 col = float4(_RayBoxMax,1);
-                /*if (ppp.y == 0)
+                float3 worldViewDir = normalize(worldPos.xyz - rayPos.xyz);
+                
+                float2 rayToContainerInfo = rayBoxDst(_RayBoxMin, _RayBoxMax, rayPos, (1 / worldViewDir));
+                float dstToBox = rayToContainerInfo.x; //相机到容器的距离
+                float dstInsideBox = rayToContainerInfo.y; //返回光线是否在容器中
+                
+                float depthEyeLinear = length(worldPos.xyz - rayPos);
+                float dstLimit = min(depthEyeLinear - dstToBox, dstInsideBox);
+
+                float _rayStep = 0.01f;
+                float sumDensity = 0;
+                float _dstTravelled = 0;
+                float3 entryPoint = rayPos + worldViewDir * dstToBox;  
+                for (int j = 0; j < 64; j++)
                 {
-                    col = float4(_RayBoxMin,1);
-                }*/
-                //rayBoxDst()
+                    if (dstLimit > _dstTravelled) //被遮住时步进跳过
+                    {
+                        if (sumDensity > 1)
+                            break;
+                        rayPos = entryPoint + (worldViewDir * _dstTravelled);
+	                    sumDensity +=  pow(SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos),5);
+                    }
+                    _dstTravelled += _rayStep; //每次步进长度
+                 }
+             
+                float4 col = float4(sumDensity.rrr,1);
                 return col;
             }
-           ENDHLSL
+            ENDHLSL
         }
     }
 }
