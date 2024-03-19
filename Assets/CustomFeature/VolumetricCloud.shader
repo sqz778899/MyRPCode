@@ -110,6 +110,8 @@ Shader "RenderFeature/VolumetricCloud"
                 float3 screenColor = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv);
                 float3 rayPos = _WorldSpaceCameraPos;
                 float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, uv);
+                float depthLinear = LinearEyeDepth(depth,_ZBufferParams);
+                
                 float4 worldPos = GetWorldSpacePosition(depth, uv);
                 float3 worldViewDir = normalize(worldPos.xyz - rayPos.xyz);
                 
@@ -117,43 +119,28 @@ Shader "RenderFeature/VolumetricCloud"
                 float dstToBox = rayToContainerInfo.x; //相机到容器的距离
                 float dstInsideBox = rayToContainerInfo.y; //返回光线是否在容器中
                 
-                float depthEyeLinear = length(worldPos.xyz - rayPos);
-                float dstLimit = min(depthEyeLinear - dstToBox, dstInsideBox);
+                float dstLimit = min(depthLinear - dstToBox, dstInsideBox);
 
                 float _rayStep = 0.01f;
                 float sumDensity = 0;
-                float _dstTravelled = 0;
-                float sumDensity2 = 0;
+                float dstTravelled = 0;
                 float3 entryPoint = rayPos + worldViewDir * dstToBox;
-
-                Light light = GetMainLight();
-                float dstLightInsideBox = rayBoxDst(_RayBoxMin, _RayBoxMax, rayPos, 1 / light.direction).y;
-                float stepSize = dstInsideBox / 10;
-                float totalDensity = 0;
-                for (int step = 0; step < 8; step++) //灯光步进次数
-                { 
-                    rayPos += light.direction * stepSize; //向灯光步进
-                    totalDensity += max(0, SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos) * stepSize); //步进的时候采样噪音累计受灯光影响密度
-                }
-                float transmittancess = exp(-totalDensity);
                 
-                
-                for (int j = 0; j < 64; j++)
+                for (int j = 0; j < 128; j++)
                 {
-                    if (_dstTravelled < dstLimit) //被遮住时步进跳过
+                    if (dstTravelled < dstLimit) //被遮住时步进跳过
                     {
-                        rayPos = entryPoint + (worldViewDir * _dstTravelled );
-	                    float density =  SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos);
-                        sumDensity += density;
-                        sumDensity2 *=  exp(-density * _rayStep);
+                        rayPos = entryPoint + (worldViewDir * dstTravelled );
+                        sumDensity += SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos) * _rayStep;
+                        //sumDensity2 *=  exp(-density * _rayStep);
                     }
                     else
                         break;
-                    _dstTravelled += _rayStep; //每次步进长度
+                    dstTravelled += _rayStep; //每次步进长度
                  }
                 float transmittance = exp(-sumDensity);
                 
-                float4 col = float4(screenColor* transmittancess,1);
+                float4 col = float4(screenColor * pow(transmittance,5),1);
                 return col;
             }
             ENDHLSL
