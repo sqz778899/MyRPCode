@@ -72,12 +72,26 @@ Shader "RenderFeature/VolumetricCloud"
                 return float2(dstToBox, dstInsideBox);
             }
 
-            float sampleDensity(float3 rayPos) 
+
+            /*float3 lightmarch(float3 position ,float dstTravelled)
             {
-                 float3 uvw = rayPos ;
-                 float4 shapeNoise = SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, uvw);
-                 return shapeNoise.r;
-             }
+               float3 dirToLight = _WorldSpaceLightPos0.xyz;
+               //灯光方向与边界框求交，超出部分不计算
+               float dstInsideBox = rayBoxDst(_boundsMin, _boundsMax, position, 1 / dirToLight).y;
+               float stepSize = dstInsideBox / 10;
+               float totalDensity = 0;
+
+              for (int step = 0; step < 8; step++) //灯光步进次数
+              { 
+                 position += dirToLight * stepSize; //向灯光步进
+                 totalDensity += max(0, sampleDensity(position) * stepSize); //步进的时候采样噪音累计受灯光影响密度
+              }
+              float transmittance = exp(-totalDensity * _lightAbsorptionTowardSun);
+              //将重亮到暗映射为 3段颜色 ,亮->灯光颜色 中->ColorA 暗->ColorB
+              float3 cloudColor = lerp(_colA, _LightColor0, saturate(transmittance * _colorOffset1));
+              cloudColor = lerp(_colB, cloudColor, saturate(pow(transmittance * _colorOffset2, 3)));
+              return _darknessThreshold + transmittance * (1 - _darknessThreshold) * cloudColor;
+            }*/
                         
             Varyings vert (Attributes input)
             {
@@ -93,7 +107,7 @@ Shader "RenderFeature/VolumetricCloud"
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 float2 uv = input.texcoord;
                 
-                //float p = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv);
+                float3 screenColor = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv);
                 float3 rayPos = _WorldSpaceCameraPos;
                 float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, uv);
                 float4 worldPos = GetWorldSpacePosition(depth, uv);
@@ -109,20 +123,37 @@ Shader "RenderFeature/VolumetricCloud"
                 float _rayStep = 0.01f;
                 float sumDensity = 0;
                 float _dstTravelled = 0;
-                float3 entryPoint = rayPos + worldViewDir * dstToBox;  
+                float sumDensity2 = 0;
+                float3 entryPoint = rayPos + worldViewDir * dstToBox;
+
+                Light light = GetMainLight();
+                float dstLightInsideBox = rayBoxDst(_RayBoxMin, _RayBoxMax, rayPos, 1 / light.direction).y;
+                float stepSize = dstInsideBox / 10;
+                float totalDensity = 0;
+                for (int step = 0; step < 8; step++) //灯光步进次数
+                { 
+                    rayPos += light.direction * stepSize; //向灯光步进
+                    totalDensity += max(0, SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos) * stepSize); //步进的时候采样噪音累计受灯光影响密度
+                }
+                float transmittancess = exp(-totalDensity);
+                
+                
                 for (int j = 0; j < 64; j++)
                 {
-                    if (dstLimit > _dstTravelled) //被遮住时步进跳过
+                    if (_dstTravelled < dstLimit) //被遮住时步进跳过
                     {
-                        if (sumDensity > 1)
-                            break;
-                        rayPos = entryPoint + (worldViewDir * _dstTravelled);
-	                    sumDensity +=  pow(SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos),5);
+                        rayPos = entryPoint + (worldViewDir * _dstTravelled );
+	                    float density =  SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos);
+                        sumDensity += density;
+                        sumDensity2 *=  exp(-density * _rayStep);
                     }
+                    else
+                        break;
                     _dstTravelled += _rayStep; //每次步进长度
                  }
-             
-                float4 col = float4(sumDensity.rrr,1);
+                float transmittance = exp(-sumDensity);
+                
+                float4 col = float4(screenColor* transmittancess,1);
                 return col;
             }
             ENDHLSL
