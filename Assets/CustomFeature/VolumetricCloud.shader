@@ -4,6 +4,9 @@ Shader "RenderFeature/VolumetricCloud"
     {
         _MainTex ("Texture", 2D) = "white" {}
         _NoiseTex ("Texture", 3D) = "white" {}
+        _lightAbsorptionTowardSun("lightAbsorptionTowardSun",float) = 1
+        _darknessThreshold("DarknessThreshold",float) = 1
+        _phaseParams("_phaseParams",Vector) = (1,1,1,1)
     }
     SubShader
     {
@@ -45,6 +48,10 @@ Shader "RenderFeature/VolumetricCloud"
 
             float4x4 _InverseProjectionMatrix;
             float4x4 _InverseViewMatrix;
+            float4 _phaseParams;
+
+            float _lightAbsorptionTowardSun;
+            float _darknessThreshold;
 
             float4 GetWorldSpacePosition(float depth, float2 uv)
             {
@@ -56,8 +63,7 @@ Shader "RenderFeature/VolumetricCloud"
                  return world_vector;
              }
 
-            float2 rayBoxDst(float3 boundsMin, float3 boundsMax,
-                            float3 rayOrigin, float3 invRaydir) 
+            float2 rayBoxDst(float3 boundsMin, float3 boundsMax,float3 rayOrigin, float3 invRaydir) 
             {
                 float3 t0 = (boundsMin - rayOrigin) * invRaydir;
                 float3 t1 = (boundsMax - rayOrigin) * invRaydir;
@@ -72,26 +78,41 @@ Shader "RenderFeature/VolumetricCloud"
                 return float2(dstToBox, dstInsideBox);
             }
 
-
-            /*float3 lightmarch(float3 position ,float dstTravelled)
+            float3 sampleDensity(float3 pos)
             {
-               float3 dirToLight = _WorldSpaceLightPos0.xyz;
-               //灯光方向与边界框求交，超出部分不计算
-               float dstInsideBox = rayBoxDst(_boundsMin, _boundsMax, position, 1 / dirToLight).y;
-               float stepSize = dstInsideBox / 10;
-               float totalDensity = 0;
+                return SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, pos);
+            }
 
-              for (int step = 0; step < 8; step++) //灯光步进次数
-              { 
-                 position += dirToLight * stepSize; //向灯光步进
-                 totalDensity += max(0, sampleDensity(position) * stepSize); //步进的时候采样噪音累计受灯光影响密度
-              }
-              float transmittance = exp(-totalDensity * _lightAbsorptionTowardSun);
-              //将重亮到暗映射为 3段颜色 ,亮->灯光颜色 中->ColorA 暗->ColorB
-              float3 cloudColor = lerp(_colA, _LightColor0, saturate(transmittance * _colorOffset1));
-              cloudColor = lerp(_colB, cloudColor, saturate(pow(transmittance * _colorOffset2, 3)));
-              return _darknessThreshold + transmittance * (1 - _darknessThreshold) * cloudColor;
-            }*/
+            float3 lightmarch(float3 position ,Light light)
+            {
+                float3 dirToLight = light.direction;
+                //灯光方向与边界框求交，超出部分不计算
+                float dstInsideBox = rayBoxDst(_RayBoxMin, _RayBoxMax, position, 1 / dirToLight).y;
+                float stepSize = dstInsideBox / 10;
+                float totalDensity = 0;
+
+                for (int step = 0; step < 8; step++) //灯光步进次数
+                { 
+                    position += dirToLight * stepSize; //向灯光步进
+                    totalDensity += max(0, sampleDensity(position) * stepSize); //步进的时候采样噪音累计受灯光影响密度
+                }
+                float transmittance = exp(-totalDensity * _lightAbsorptionTowardSun);
+              
+                return _darknessThreshold + transmittance * (1 - _darknessThreshold);
+            }
+            
+            float hg(float a, float g)
+            {
+                float g2 = g*g;
+                return (1-g2) / (4*3.1415*pow(1+g2-2*g*(a), 1.5));
+            }
+
+            float phase(float a)
+            {
+                float blend = .5;
+                float hgBlend = hg(a,_phaseParams.x) * (1-blend) + hg(a,-_phaseParams.y) * blend;
+                return _phaseParams.z + hgBlend*_phaseParams.w;
+            }
                         
             Varyings vert (Attributes input)
             {
@@ -126,21 +147,36 @@ Shader "RenderFeature/VolumetricCloud"
                 float dstTravelled = 0;
                 float3 entryPoint = rayPos + worldViewDir * dstToBox;
                 
-                for (int j = 0; j < 128; j++)
-                {
-                    if (dstTravelled < dstLimit) //被遮住时步进跳过
-                    {
-                        rayPos = entryPoint + (worldViewDir * dstTravelled );
-                        sumDensity += SAMPLE_TEXTURE3D(_NoiseTex, sampler_NoiseTex, rayPos) * _rayStep;
-                        //sumDensity2 *=  exp(-density * _rayStep);
-                    }
-                    else
-                        break;
-                    dstTravelled += _rayStep; //每次步进长度
-                 }
-                float transmittance = exp(-sumDensity);
+                Light light = GetMainLight();
+                float cosAngle = dot(worldViewDir, light.direction.xyz);
+                float phaseVal = phase(cosAngle);
                 
-                float4 col = float4(screenColor * pow(transmittance,5),1);
+                float transmittance = 1;
+                float3 lightEnergy = 0;
+               
+                for (int j = 0; j < 64; j++)
+                {
+                    if (dstTravelled < dstLimit)
+                    {
+                        rayPos = entryPoint + worldViewDir * dstTravelled;
+                        float density = sampleDensity(rayPos);
+                        if (density > 0)
+                        {
+                            float lightTransmittance = lightmarch(rayPos,light);
+                            lightEnergy += density * _rayStep * transmittance * lightTransmittance * phaseVal;
+                            transmittance *= exp(-density *_rayStep * _lightAbsorptionTowardSun);
+
+                            if(transmittance < 0.01f)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    dstTravelled += _rayStep; //每次步进长度
+                }
+                //transmittance = exp(-sumDensity);
+                 float3 cloudCol = lightEnergy * light.color;
+                float4 col = float4(screenColor * transmittance + cloudCol,1);
                 return col;
             }
             ENDHLSL
