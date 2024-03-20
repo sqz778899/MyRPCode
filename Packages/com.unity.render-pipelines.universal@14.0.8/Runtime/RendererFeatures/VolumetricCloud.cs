@@ -37,7 +37,7 @@ namespace UnityEngine.Rendering.Universal
             private RTHandle m_RTHVolumetricCloud;
             internal void SetUp(RenderPassEvent curRenderPassEvent,Material curMat,in RenderingData renderingData)
             {
-                Debug.Log("SetUp VolumetricCloudPass");
+                //Debug.Log("SetUp VolumetricCloudPass");
                 m_PassMaterial = curMat;
                 renderPassEvent = curRenderPassEvent;
             
